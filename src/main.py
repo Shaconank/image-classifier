@@ -296,6 +296,10 @@ class MedicalImageApp:
         organ_combo = ttk.Combobox(match_frame, textvariable=self.organ_var, values=self.organs, width=15)
         organ_combo.pack(side=tk.LEFT, padx=5)
 
+        ttk.Label(match_frame, text="Comments:").pack(side=tk.LEFT, padx=(10, 0))
+        self.comment_text = tk.Text(match_frame, width=30, height=3, wrap="word")
+        self.comment_text.pack(side=tk.LEFT, padx=5)
+
         ttk.Button(match_frame, text="Save", command=self.save_match, style="Accent.TButton").pack(side=tk.LEFT, padx=10)
         ttk.Button(match_frame, text="Find Recommendations", command=self.find_recommendations).pack(side=tk.LEFT, padx=5)
 
@@ -657,6 +661,20 @@ class MedicalImageApp:
 
                 self.status_label.config(text=f"Saved match {self.id_counter:03d} for {organ} - Ready for next")
 
+                # --- collect and save comment ---
+                comment = self.comment_text.get("1.0", "end").strip()
+                if comment:
+                    self.save_comment_log({
+                        "id": self.id_counter,
+                        "organ": organ,
+                        "mode": mode,
+                        "raw_path": raw_path,
+                        "gt_path": gt_path,
+                        "comment": comment
+                    })
+                    self.comment_text.delete("1.0", "end")
+
+
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save images: {str(e)}")
 
@@ -690,9 +708,37 @@ class MedicalImageApp:
                 self.current_selections = {"raw": None, "ground_truth": None}
 
                 self.status_label.config(text=f"Saved pure raw {next_id:03d} for {organ} - Ready for next")
+                
+                # --- collect and save comment ---
+                comment = self.comment_text.get("1.0", "end").strip()
+                if comment:
+                    self.save_comment_log({
+                        "id": self.id_counter,
+                        "organ": organ,
+                        "mode": mode,
+                        "raw_path": raw_path,
+                        "gt_path": gt_path,
+                        "comment": comment
+                    })
+                    self.comment_text.delete("1.0", "end")
+
 
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to save image: {str(e)}")
+    
+    def save_comment_log(self, entry):
+        """Append match details and comment to a JSON log file."""
+        log_file = "matches_log.json"
+        data = []
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, "r") as f:
+                    data = json.load(f)
+            except Exception:
+                data = []
+        data.append(entry)
+        with open(log_file, "w") as f:
+            json.dump(data, f, indent=2)
 
     def mark_file_processed(self, study_folder, filename):
         """Mark a file as processed"""
