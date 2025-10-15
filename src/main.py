@@ -717,7 +717,6 @@ class MedicalImageApp:
                         "organ": organ,
                         "mode": mode,
                         "raw_path": raw_path,
-                        "gt_path": gt_path,
                         "comment": comment
                     })
                     self.comment_text.delete("1.0", "end")
