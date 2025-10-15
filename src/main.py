@@ -5,7 +5,6 @@ from PIL import Image, ImageTk
 import json
 import shutil
 
-# NEW: deps for similarity
 import numpy as np
 try:
     import cv2
@@ -219,7 +218,7 @@ class MedicalImageApp:
         self.current_patient_index = -1  # index into patient_order
 
         # Predefined organs
-        self.organs = ["Brain", "Heart", "Liver", "Kidney", "Lung", "Pancreas", "Spleen", "Stomach"]
+        self.organs = ["Liver","Liver GB", "Right Kidney","Left Kidney","Right Ovary","Left Ovary","Pancreas", "Spleen","Uterus","Endometrium","Bladder","Prostate"]
 
         # Load tracking data
         self.processed_files = self.load_tracking_data()
