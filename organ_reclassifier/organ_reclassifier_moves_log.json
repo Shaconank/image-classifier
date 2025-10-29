@@ -1,0 +1,29 @@
+[
+  {
+    "name": "309_001911",
+    "dataset": "matched_images",
+    "organ": "Right Kidney",
+    "action": "switch_raw_gt",
+    "raw_folder": "Data-Remapped-Combined\\matched_images\\Right Kidney\\raw_images\\309_001911",
+    "gt_folder": "Data-Remapped-Combined\\matched_images\\Right Kidney\\ground_truth_images\\309_001911"
+  },
+  {
+    "name": "100_002224",
+    "dataset": "pure_raw_images",
+    "organ": "Pancreas",
+    "action": "delete",
+    "deleted_paths": [
+      "Data-Remapped-Combined\\pure_raw_images\\Pancreas\\100_002224"
+    ]
+  },
+  {
+    "name": "149_002260",
+    "dataset": "pure_raw_images",
+    "from_organ": "Uterus",
+    "to_organ": "Bladder",
+    "src_folder": "Data-Remapped-Combined\\pure_raw_images\\Uterus\\149_002260",
+    "dest_folder": "Data-Remapped-Combined\\pure_raw_images\\Bladder\\149_002260",
+    "src_gt": null,
+    "dest_gt": null
+  }
+]
