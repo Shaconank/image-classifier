@@ -31,6 +31,17 @@ class OrganReclassifierApp(tk.Tk):
         self.current_index = 0
         self.current_image_tk = None
 
+        # Add raw data path constant
+        self.RAW_DATA_DIR = r"C:\Users\shash\OneDrive\Documents\golej\Capstone\full_exported_data\full_exported_data"
+        # Add OpenCV check
+        self.has_cv2 = False
+        try:
+            import cv2
+            import numpy as np
+            self.has_cv2 = True
+        except ImportError:
+            pass
+
         # Build UI
         self._build_controls()
         self.scan_organs()
@@ -46,6 +57,107 @@ class OrganReclassifierApp(tk.Tk):
         if not os.path.exists(LOG_FILE):
             with open(LOG_FILE, 'w') as f:
                 json.dump([], f)
+
+        # Add instance variable to track similar image window
+        self.similar_window = None
+        # Add variable to store current matches and index
+        self.current_matches = []
+        self.current_match_index = 0
+    def set_as_pure_raw(self):
+        """Move the current matched image (raw or ground truth view) into pure_raw_images and delete the pair."""
+        ds = self.current_dataset.get()
+        if ds != 'matched_images':
+            messagebox.showwarning("Invalid Operation", "This action is only available for matched_images dataset.")
+            return
+
+        if not self.data_points:
+            messagebox.showinfo("No item", "No data point selected.")
+            return
+
+        organ = self.current_organ.get()
+        name = self.data_points[self.current_index]
+        is_gt = self.view_gt.get()
+
+        # Determine source folder
+        src_dir = os.path.join(self.root_dir, ds, organ, 
+                            'ground_truth_images' if is_gt else 'raw_images', name)
+        other_dir = os.path.join(self.root_dir, ds, organ,
+                                'raw_images' if is_gt else 'ground_truth_images', name)
+
+        if not os.path.isdir(src_dir):
+            messagebox.showerror("Error", f"Source folder not found: {src_dir}")
+            return
+
+        # Destination in pure_raw_images
+        dest_dir = os.path.join(self.root_dir, 'pure_raw_images', organ, name)
+        os.makedirs(dest_dir, exist_ok=True)
+
+        # Collect files (png, json, dcm/_anon.dcm)
+        src_png = src_json = src_dcm = None
+        for file in os.listdir(src_dir):
+            ext = os.path.splitext(file)[1].lower()
+            path = os.path.join(src_dir, file)
+            if ext == '.png':
+                src_png = path
+            elif ext == '.json':
+                src_json = path
+            elif ext == '.dcm' or file.lower().endswith('_anon.dcm'):
+                src_dcm = path
+
+        if not src_png:
+            messagebox.showerror("Error", "No .png file found in source folder.")
+            return
+
+        # Confirm
+        if not messagebox.askyesno("Confirm", f"Move '{name}' ({'GT' if is_gt else 'Raw'}) to pure_raw_images/{organ}?"):
+            return
+
+        try:
+            # Copy files to new destination
+            shutil.copy2(src_png, os.path.join(dest_dir, os.path.basename(src_png)))
+            if src_json and os.path.exists(src_json):
+                shutil.copy2(src_json, os.path.join(dest_dir, os.path.basename(src_json)))
+            if src_dcm and os.path.exists(src_dcm):
+                shutil.copy2(src_dcm, os.path.join(dest_dir, os.path.basename(src_dcm)))
+
+            # Log the move
+            self._log_move({
+                "action": "set_as_pure_raw",
+                "dataset": ds,
+                "organ": organ,
+                "name": name,
+                "source_dir": src_dir,
+                "destination_dir": dest_dir,
+                "moved_files": [src_png, src_json, src_dcm],
+            })
+
+            # Delete both raw and ground truth folders
+            deleted = []
+            if os.path.isdir(src_dir):
+                shutil.rmtree(src_dir)
+                deleted.append(src_dir)
+            if os.path.isdir(other_dir):
+                shutil.rmtree(other_dir)
+                deleted.append(other_dir)
+
+            self._log_move({
+                "action": "delete_matched_pair_after_set_as_pure_raw",
+                "dataset": ds,
+                "organ": organ,
+                "name": name,
+                "deleted_folders": deleted
+            })
+
+            # Refresh UI
+            self.current_dataset.set('pure_raw_images')
+            self.scan_organs()
+            self.current_organ.set(organ)
+            self.load_organ()
+            self.load_organ()
+            messagebox.showinfo("Success", f"'{name}' moved to pure_raw_images/{organ} and pair deleted.")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to move image:\n{e}")
 
     def _build_controls(self):
         # Top frame for dataset and root dir
@@ -110,6 +222,11 @@ class OrganReclassifierApp(tk.Tk):
 
         # Delete button (new)
         ttk.Button(right_frame, text='Delete Data Point', command=self.delete_current).pack(anchor='nw', padx=6, pady=(0, 12))
+
+        # Add Find Similar button
+        ttk.Button(right_frame, text='Find Similar Images', command=self.find_similar_images).pack(anchor='nw', padx=6, pady=(0, 12))
+        # Set as Pure Raw button (new feature)
+        ttk.Button(right_frame, text='Set as Pure Raw', command=self.set_as_pure_raw).pack(anchor='nw', padx=6, pady=(0, 12))
 
         # --- Enhanced interactive controls ---
         jump_frame = ttk.LabelFrame(right_frame, text="Jump to Data Point")
@@ -521,6 +638,460 @@ class OrganReclassifierApp(tk.Tk):
                 messagebox.showinfo('Deleted', f'Deleted "{name}"')
             except Exception as e:
                 messagebox.showerror('Error', f'Error deleting folder: {e}')
+
+    def extract_patient_number(self, filename):
+        """Extract patient number from filename, removing leading zeros."""
+        parts = filename.split('_')
+        if parts:
+            return str(int(parts[0]))  # Remove leading zeros
+        return None
+
+    def find_similar_images(self):
+        """Find similar images to the current image in the raw data folder."""
+        if not self.has_cv2:
+            messagebox.showwarning("OpenCV Required", "OpenCV is required for image similarity matching.\nInstall with: pip install opencv-python")
+            return
+
+        if not self.data_points or not hasattr(self, 'current_index'):
+            messagebox.showinfo("No Image", "Please select an image first")
+            return
+
+        import cv2
+        import numpy as np
+
+        # Get current image
+        name = self.data_points[self.current_index]
+        ds = self.current_dataset.get()
+        organ = self.current_organ.get()
+
+        if ds == 'matched_images':
+            folder = os.path.join(self.root_dir, ds, organ, 'raw_images' if not self.view_gt.get() else 'ground_truth_images', name)
+        else:
+            folder = os.path.join(self.root_dir, ds, organ, name)
+
+        # Find first image in folder
+        img_path = None
+        for fn in os.listdir(folder):
+            if os.path.splitext(fn)[1].lower() in IMAGE_EXTS:
+                img_path = os.path.join(folder, fn)
+                break
+
+        if not img_path:
+            messagebox.showerror("Error", "Could not load current image")
+            return
+
+        # Extract patient number from current image
+        patient_num = self.extract_patient_number(name)
+        if not patient_num:
+            messagebox.showerror("Error", "Could not extract patient number from filename")
+            return
+
+        # Find patient folder in raw data
+        patient_folder = os.path.join(self.RAW_DATA_DIR, patient_num)
+        if not os.path.exists(patient_folder):
+            messagebox.showerror("Error", f"Patient folder not found: {patient_folder}")
+            return
+
+        # Load and preprocess query image
+        query_img = cv2.imread(img_path)
+        if query_img is None:
+            messagebox.showerror("Error", "Could not load query image")
+            return
+
+        # Create ORB detector
+        orb = cv2.ORB_create(nfeatures=1200, scaleFactor=1.2, nlevels=8, edgeThreshold=15, fastThreshold=5)
+
+        # Get query image keypoints and descriptors
+        query_gray = cv2.cvtColor(query_img, cv2.COLOR_BGR2GRAY)
+        query_kp, query_desc = orb.detectAndCompute(query_gray, None)
+
+        if query_desc is None:
+            messagebox.showwarning("Warning", "Could not extract features from query image")
+            return
+
+        # Find all PNG files in patient folder recursively
+        matches = []
+        for root, _, files in os.walk(patient_folder):
+            for file in files:
+                if file.lower().endswith('.png'):
+                    target_path = os.path.join(root, file)
+                    if target_path == img_path:  # Skip self
+                        continue
+
+                    # Load and process target image
+                    target_img = cv2.imread(target_path)
+                    if target_img is None:
+                        continue
+
+                    target_gray = cv2.cvtColor(target_img, cv2.COLOR_BGR2GRAY)
+                    target_kp, target_desc = orb.detectAndCompute(target_gray, None)
+
+                    if target_desc is None:
+                        continue
+
+                    # Match descriptors
+                    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+                    knn_matches = bf.knnMatch(query_desc, target_desc, k=2)
+
+                    # Apply ratio test
+                    good = []
+                    for m, n in knn_matches:
+                        if m.distance < 0.75 * n.distance:
+                            good.append(m)
+
+                    if len(good) >= 8:  # Minimum matches threshold
+                        # Get matched keypoints for homography
+                        src_pts = np.float32([query_kp[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+                        dst_pts = np.float32([target_kp[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+
+                        # Find homography matrix and get inliers mask
+                        H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+
+                        if mask is not None:
+                            inlier_count = int(mask.sum())
+                            if inlier_count >= 15:  # Minimum inliers threshold
+                                matches.append({
+                                    'path': target_path,
+                                    'score': inlier_count,
+                                    'filename': file
+                                })
+
+        # Sort matches by score
+        matches.sort(key=lambda x: x['score'], reverse=True)
+
+        # Store matches and show first result
+        self.current_matches = matches
+        self.current_match_index = 1 if len(matches) > 1 else 0  # Start with second highest score if available
+        if len(matches) > 1:
+            self.show_similar_image()
+        else:
+            messagebox.showinfo("No Matches", "No similar images found")
+    def pair_to_matched_images(self, role):
+        """
+        Create a matched_images entry from a pure_raw_images image and a similar image.
+        role: 'ground_truth' or 'raw' - defines what the CURRENT pure_raw image becomes.
+        """
+        if not self.current_matches:
+            messagebox.showwarning("No Match", "No similar image selected.")
+            return
+
+        match = self.current_matches[self.current_match_index]
+        source_path = match['path']
+        if not os.path.exists(source_path):
+            messagebox.showerror("Error", f"File not found: {source_path}")
+            return
+
+        ds = self.current_dataset.get()
+        if ds != 'pure_raw_images':
+            messagebox.showwarning("Invalid Operation", "This action is only available for pure_raw_images.")
+            return
+
+        organ = self.current_organ.get()
+        name = self.data_points[self.current_index]
+
+        # Current (pure raw) image folder and image path
+        current_folder = os.path.join(self.root_dir, ds, organ, name)
+        current_img = None
+        for fn in os.listdir(current_folder):
+            if os.path.splitext(fn)[1].lower() in IMAGE_EXTS:
+                current_img = os.path.join(current_folder, fn)
+                break
+        if not current_img:
+            messagebox.showerror("Error", "No image found in current folder.")
+            return
+
+        # Prepare destination in matched_images
+        matched_root = os.path.join(self.root_dir, 'matched_images', organ)
+        raw_dir = os.path.join(matched_root, 'raw_images', name)
+        gt_dir = os.path.join(matched_root, 'ground_truth_images', name)
+
+        # Confirm before creating
+        if not messagebox.askyesno("Confirm", f"Create matched pair for '{name}'?\n\nRole: {role}\nSource: {source_path}"):
+            return
+
+        os.makedirs(raw_dir, exist_ok=True)
+        os.makedirs(gt_dir, exist_ok=True)
+
+        # Decide roles
+        if role == 'ground_truth':
+            gt_img = current_img
+            raw_img = source_path
+        else:  # role == 'raw'
+            raw_img = current_img
+            gt_img = source_path
+
+        # Determine destination filenames
+        raw_name = os.path.splitext(os.path.basename(raw_img))[0]
+        gt_name = os.path.splitext(os.path.basename(gt_img))[0]
+
+        dest_raw = os.path.join(raw_dir, f"{raw_name}.png")
+        dest_gt = os.path.join(gt_dir, f"{gt_name}.png")
+
+        try:
+            shutil.copy2(raw_img, dest_raw)
+            shutil.copy2(gt_img, dest_gt)
+
+            # Optionally copy json/dcm if exist
+            for ext in ['.json', '.dcm', '_anon.dcm']:
+                raw_src_extra = os.path.splitext(raw_img)[0] + ext
+                gt_src_extra = os.path.splitext(gt_img)[0] + ext
+                if os.path.exists(raw_src_extra):
+                    shutil.copy2(raw_src_extra, os.path.join(raw_dir, os.path.basename(raw_src_extra)))
+                if os.path.exists(gt_src_extra):
+                    shutil.copy2(gt_src_extra, os.path.join(gt_dir, os.path.basename(gt_src_extra)))
+
+            # Log and delete original pure raw directory
+            self._log_move({
+                "action": f"promote_to_matched_{role}",
+                "organ": organ,
+                "name": name,
+                "from_dataset": ds,
+                "to_dataset": "matched_images",
+                "raw_image": dest_raw,
+                "ground_truth_image": dest_gt,
+                "source_match_path": source_path
+            })
+
+            shutil.rmtree(current_folder)
+
+            self.load_organ()
+            messagebox.showinfo("Success", f"Created matched pair for '{name}' and removed pure raw folder.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create matched pair:\n{e}")
+
+        
+
+    def replace_corresponding_files(self, target_type):
+        """
+        Replace corresponding files (PNG, JSON, DCM) in the target folder
+        with the selected similar image's versions.
+        target_type: 'ground_truth' or 'raw'
+        """
+        if not self.current_matches:
+            messagebox.showwarning("No Match", "No similar image selected.")
+            return
+
+        match = self.current_matches[self.current_match_index]
+        source_path = match['path']
+        if not os.path.exists(source_path):
+            messagebox.showerror("Error", f"File not found: {source_path}")
+            return
+
+        ds = self.current_dataset.get()
+        organ = self.current_organ.get()
+        name = self.data_points[self.current_index]
+
+        if ds != 'matched_images':
+            messagebox.showwarning("Invalid Operation", "This action is only available for matched_images.")
+            return
+
+        raw_dir = os.path.join(self.root_dir, ds, organ, 'raw_images', name)
+        gt_dir = os.path.join(self.root_dir, ds, organ, 'ground_truth_images', name)
+
+        if not os.path.isdir(raw_dir) or not os.path.isdir(gt_dir):
+            messagebox.showerror("Missing Folders", "Both raw and ground_truth directories must exist.")
+            return
+
+        if target_type == 'ground_truth':
+            target_dir = gt_dir
+            source_label = "ground truth"
+            reference_dir = raw_dir
+        else:
+            target_dir = raw_dir
+            source_label = "raw"
+            reference_dir = gt_dir
+
+        # Find base name from reference .png file
+        base_name = None
+        for file in os.listdir(reference_dir):
+            if file.lower().endswith('.png'):
+                base_name = os.path.splitext(file)[0]
+                break
+        if not base_name:
+            messagebox.showerror("Error", "No reference .png found to determine filenames.")
+            return
+
+        # Destination files
+        target_png = os.path.join(target_dir, f"{base_name}.png")
+        target_json = os.path.join(target_dir, f"{base_name}.json")
+        target_dcm = os.path.join(target_dir, f"{base_name}.dcm")  # <<-- no "_anon" here
+
+        # Source files
+        source_dir = os.path.dirname(source_path)
+        source_base = os.path.splitext(os.path.basename(source_path))[0]
+        source_png = source_path
+        source_json = os.path.join(source_dir, f"{source_base}.json")
+
+        # Try both with and without "_anon" for the source DICOM
+        source_dcm = os.path.join(source_dir, f"{source_base}_anon.dcm")
+        if not os.path.exists(source_dcm):
+            alt_dcm = os.path.join(source_dir, f"{source_base}.dcm")
+            if os.path.exists(alt_dcm):
+                source_dcm = alt_dcm
+
+        # --- Confirmation Popup ---
+        confirm_win = tk.Toplevel(self)
+        confirm_win.title("Confirm Replacement")
+        confirm_win.geometry("600x400")
+
+        ttk.Label(confirm_win, text=f"⚠️ You are about to replace {source_label} files").pack(pady=(10, 5))
+        ttk.Separator(confirm_win, orient='horizontal').pack(fill='x', padx=10, pady=5)
+
+        text = tk.Text(confirm_win, wrap='word', width=70, height=16)
+        text.pack(padx=10, pady=10, fill='both', expand=True)
+
+        def add_section(title, paths):
+            text.insert('end', f"{title}:\n", 'header')
+            for p in paths:
+                text.insert('end', f"  {p}\n")
+            text.insert('end', "\n")
+
+        add_section("Current Files Being Replaced", [target_png, target_json, target_dcm])
+        add_section("Source Files (Replacing)", [source_png, source_json, source_dcm])
+        add_section("New Destination Filenames", [
+            os.path.basename(target_png),
+            os.path.basename(target_json),
+            os.path.basename(target_dcm)
+        ])
+
+        text.tag_configure('header', font=('TkDefaultFont', 10, 'bold'))
+        text.configure(state='disabled')
+
+        btn_frame = ttk.Frame(confirm_win)
+        btn_frame.pack(pady=10)
+
+        def do_replace():
+            try:
+                shutil.copy2(source_png, target_png)
+                if os.path.exists(source_json):
+                    shutil.copy2(source_json, target_json)
+                if os.path.exists(source_dcm):
+                    shutil.copy2(source_dcm, target_dcm)
+
+                self._log_move({
+                    "action": f"replace_{source_label}",
+                    "dataset": ds,
+                    "organ": organ,
+                    "name": name,
+                    "source_files": [source_png, source_json, source_dcm],
+                    "replaced_files": [target_png, target_json, target_dcm]
+                })
+
+                confirm_win.destroy()
+                self.similar_window.destroy()
+                messagebox.showinfo("Success", f"Replaced {source_label} files successfully.")
+                self.show_current()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to replace files:\n{e}")
+
+        ttk.Button(btn_frame, text="✅ Confirm Replace", command=do_replace).pack(side=tk.LEFT, padx=10)
+        ttk.Button(btn_frame, text="❌ Cancel", command=confirm_win.destroy).pack(side=tk.LEFT, padx=10)
+
+
+    def show_similar_image(self):
+        """Show the similar image in a popup window with navigation and replacement options."""
+        if not self.current_matches:
+            return
+
+        # Close existing window if open
+        if self.similar_window and self.similar_window.winfo_exists():
+            self.similar_window.destroy()
+
+        self.similar_window = tk.Toplevel(self)
+        self.similar_window.title("Similar Images")
+        self.similar_window.geometry("800x600")
+
+        match = self.current_matches[self.current_match_index]
+
+        # --- Action buttons depending on dataset state ---
+        ds = self.current_dataset.get()
+        is_gt = self.view_gt.get()
+
+        action_frame = ttk.Frame(self.similar_window)
+        action_frame.pack(side=tk.TOP, fill=tk.X, pady=6)
+
+        if ds == 'matched_images':
+            if not is_gt:
+                ttk.Button(
+                    action_frame, text="✅ Set as Ground Truth",
+                    command=lambda: self.replace_corresponding_files('ground_truth')
+                ).pack(side=tk.LEFT, padx=8)
+            else:
+                ttk.Button(
+                    action_frame, text="✅ Set as Raw",
+                    command=lambda: self.replace_corresponding_files('raw')
+                ).pack(side=tk.LEFT, padx=8)
+        elif ds == 'pure_raw_images':
+            ttk.Button(
+                action_frame, text="🌱 Set as Ground Truth (Create Match)",
+                command=lambda: self.pair_to_matched_images('ground_truth')
+            ).pack(side=tk.LEFT, padx=8)
+            ttk.Button(
+                action_frame, text="🌿 Set as Raw (Create Match)",
+                command=lambda: self.pair_to_matched_images('raw')
+            ).pack(side=tk.LEFT, padx=8)
+
+
+        # --- Navigation + Info ---
+        nav_frame = ttk.Frame(self.similar_window)
+        nav_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=5)
+
+        prev_btn = ttk.Button(nav_frame, text="Previous",
+                            command=self.prev_similar_image,
+                            state='disabled' if self.current_match_index == 0 else 'normal')
+        prev_btn.pack(side=tk.LEFT, padx=5)
+
+        next_btn = ttk.Button(nav_frame, text="Next",
+                            command=self.next_similar_image,
+                            state='disabled' if self.current_match_index >= len(self.current_matches) - 1 else 'normal')
+        next_btn.pack(side=tk.LEFT, padx=5)
+
+        count_label = ttk.Label(nav_frame,
+                                text=f"Image {self.current_match_index + 1} of {len(self.current_matches)}")
+        count_label.pack(side=tk.LEFT, padx=20)
+
+        ttk.Button(nav_frame, text="Close", command=self.similar_window.destroy).pack(side=tk.RIGHT, padx=5)
+
+        ttk.Label(self.similar_window, text=f"Similarity Score: {match['score']}").pack(side=tk.BOTTOM, pady=5)
+        ttk.Label(self.similar_window, text=f"Path: {match['path']}").pack(side=tk.BOTTOM, pady=5)
+
+        canvas = tk.Canvas(self.similar_window, bg='black')
+        canvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        try:
+            img = Image.open(match['path'])
+            canvas_w = 780
+            canvas_h = 520
+            img_w, img_h = img.size
+            scale = min(canvas_w/img_w, canvas_h/img_h)
+            new_w = int(img_w * scale)
+            new_h = int(img_h * scale)
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            canvas.image = photo
+            x = (canvas_w - new_w) // 2
+            y = (canvas_h - new_h) // 2
+            canvas.create_image(x, y, image=photo, anchor='nw')
+        except Exception as e:
+            canvas.create_text(400, 300, text=f"Error loading image: {str(e)}", fill='white', anchor='center')
+
+        self.similar_window.bind('<Left>', lambda e: self.prev_similar_image())
+        self.similar_window.bind('<Right>', lambda e: self.next_similar_image())
+        self.similar_window.bind('<Escape>', lambda e: self.similar_window.destroy())
+
+
+    def prev_similar_image(self):
+        """Show previous similar image."""
+        if self.current_match_index > 0:
+            self.current_match_index -= 1
+            self.show_similar_image()
+
+    def next_similar_image(self):
+        """Show next similar image."""
+        if self.current_match_index < len(self.current_matches) - 1:
+            self.current_match_index += 1
+            self.show_similar_image()
 
     def _on_canvas_configure(self):
         """Handler called after canvas resizing to refresh the current preview without changing index."""
