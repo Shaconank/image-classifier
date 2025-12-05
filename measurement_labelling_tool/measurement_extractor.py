@@ -532,11 +532,11 @@ class MedicalImageAnnotator:
                 entry.pack(side=tk.LEFT, padx=5)
                 entry_list.append(entry)
                 
-                # Unit dropdown - use last remembered unit or default to mm
-                default_unit = self.last_units.get(measurement, "mm")
+                # Unit dropdown - use last remembered unit or default to cm
+                default_unit = self.last_units.get(measurement, "cm")
                 unit_var = tk.StringVar(value=default_unit)
                 unit_combo = ttk.Combobox(row, textvariable=unit_var, 
-                                          values=["mm", "cm"], width=5, state="readonly")
+                                          values=["cm", "mm"], width=5, state="readonly")
                 unit_combo.pack(side=tk.LEFT, padx=5)
                 
                 # Save unit preference when changed
@@ -831,4 +831,3 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = MedicalImageAnnotator(root)
     root.mainloop()
-
