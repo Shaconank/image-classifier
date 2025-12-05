@@ -728,11 +728,29 @@ class MedicalImageAnnotator:
             )
             
             if has_content:
+                # Extract relative paths
+                main_gt_path = img_data['main_gt_path'].replace('\\', '/')
+                main_raw_path = img_data['main_raw_path'].replace('\\', '/') if img_data['main_raw_path'] else None
+                supp_raw_path = img_data['supp_raw_path'].replace('\\', '/') if img_data['supp_raw_path'] else None
+                supp_gt_path = img_data['supp_gt_path'].replace('\\', '/') if img_data['supp_gt_path'] else None
+                
+                # Extract from Data-Images-Combined
+                if 'Data-Images-Combined' in main_gt_path:
+                    main_gt_path = '/Data-Images-Combined/' + main_gt_path.split('Data-Images-Combined/', 1)[-1]
+                if main_raw_path and 'Data-Images-Combined' in main_raw_path:
+                    main_raw_path = '/Data-Images-Combined/' + main_raw_path.split('Data-Images-Combined/', 1)[-1]
+                
+                # Extract from segmentation_dataaset
+                if supp_raw_path and 'segmentation_dataaset' in supp_raw_path:
+                    supp_raw_path = '/segmentation_dataaset/' + supp_raw_path.split('segmentation_dataaset/', 1)[-1]
+                if supp_gt_path and 'segmentation_dataaset' in supp_gt_path:
+                    supp_gt_path = '/segmentation_dataaset/' + supp_gt_path.split('segmentation_dataaset/', 1)[-1]
+                
                 entry = {
-                    "main_gt_path": img_data['main_gt_path'],
-                    "main_raw_path": img_data['main_raw_path'],
-                    "supp_raw_path": img_data['supp_raw_path'],
-                    "supp_gt_path": img_data['supp_gt_path'],
+                    "main_gt_path": main_gt_path,
+                    "main_raw_path": main_raw_path,
+                    "supp_raw_path": supp_raw_path,
+                    "supp_gt_path": supp_gt_path,
                     "organ_name": img_data['organ_name'],
                     "has_mask": img_data['has_mask'],
                     "measurements": img_data.get('measurements', {}),
@@ -783,7 +801,23 @@ class MedicalImageAnnotator:
             # Map existing data back to images_data
             for img_data in self.images_data:
                 for existing in existing_data:
-                    if existing['main_gt_path'] == img_data['main_gt_path']:
+                    # Extract relative paths for comparison
+                    img_main_gt = img_data['main_gt_path'].replace('\\', '/')
+                    existing_main_gt = existing['main_gt_path'].replace('\\', '/')
+                    
+                    # Compare using relative paths from Data-Images-Combined
+                    if 'Data-Images-Combined' in img_main_gt and 'Data-Images-Combined' in existing_main_gt:
+                        img_rel = img_main_gt.split('Data-Images-Combined/', 1)[-1]
+                        existing_rel = existing_main_gt.split('Data-Images-Combined/', 1)[-1]
+                        if img_rel == existing_rel:
+                            img_data['measurements'] = existing.get('measurements', {})
+                            if existing.get('flagged'):
+                                self.flagged_images[img_data['filename']] = existing.get('flag_comment', '')
+                            if existing.get('completed'):
+                                self.completed_images.add(img_data['filename'])
+                            break
+                    elif existing['main_gt_path'] == img_data['main_gt_path']:
+                        # Fallback to exact match
                         img_data['measurements'] = existing.get('measurements', {})
                         if existing.get('flagged'):
                             self.flagged_images[img_data['filename']] = existing.get('flag_comment', '')
