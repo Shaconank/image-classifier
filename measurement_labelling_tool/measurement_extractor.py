@@ -740,11 +740,11 @@ class MedicalImageAnnotator:
                 if main_raw_path and 'Data-Images-Combined' in main_raw_path:
                     main_raw_path = '/Data-Images-Combined/' + main_raw_path.split('Data-Images-Combined/', 1)[-1]
                 
-                # Extract from segmentation_dataaset
-                if supp_raw_path and 'segmentation_dataaset' in supp_raw_path:
-                    supp_raw_path = '/segmentation_dataaset/' + supp_raw_path.split('segmentation_dataaset/', 1)[-1]
-                if supp_gt_path and 'segmentation_dataaset' in supp_gt_path:
-                    supp_gt_path = '/segmentation_dataaset/' + supp_gt_path.split('segmentation_dataaset/', 1)[-1]
+                # Extract from segmentation_dataset
+                if supp_raw_path and 'segmentation_dataset' in supp_raw_path:
+                    supp_raw_path = '/segmentation_dataset/' + supp_raw_path.split('segmentation_dataset/', 1)[-1]
+                if supp_gt_path and 'segmentation_dataset' in supp_gt_path:
+                    supp_gt_path = '/segmentation_dataset/' + supp_gt_path.split('segmentation_dataset/', 1)[-1]
                 
                 entry = {
                     "main_gt_path": main_gt_path,
@@ -831,3 +831,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = MedicalImageAnnotator(root)
     root.mainloop()
+
